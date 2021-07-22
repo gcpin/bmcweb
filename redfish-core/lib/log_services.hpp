@@ -1263,6 +1263,16 @@ inline void requestRoutesSystemLogServiceCollection(App& app)
                     "/redfish/v1/Systems/system/LogServices/AuditLog";
                 logServiceArray.push_back(std::move(auditLog));
             }
+            if constexpr (BMCWEB_HW_ISOLATION)
+            {
+                nlohmann::json& logServiceArrayLocal =
+                    asyncResp->res.jsonValue["Members"];
+                logServiceArrayLocal.push_back(
+                    {{"@odata.id", "/redfish/v1/Systems/system/"
+                                   "LogServices/HardwareIsolation"}});
+                asyncResp->res.jsonValue["Members@odata.count"] =
+                    logServiceArrayLocal.size();
+            }
         });
 }
 
