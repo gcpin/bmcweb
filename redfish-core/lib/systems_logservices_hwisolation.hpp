@@ -2,6 +2,7 @@
 
 #include "bmcweb_config.h"
 #include "app.hpp"
+#include "assembly.hpp"
 #include "async_resp.hpp"
 #include "dbus_singleton.hpp"
 #include "dbus_utility.hpp"
@@ -57,7 +58,12 @@ static const RedfishUriListType redfishUriList = {
     {"xyz.openbmc_project.Inventory.Item.Dimm",
      "/redfish/v1/Systems/system/Memory"},
     {"xyz.openbmc_project.Inventory.Item.CpuCore",
-     "/redfish/v1/Systems/system/Processors/<str>/SubProcessors"}};
+     "/redfish/v1/Systems/system/Processors/<str>/SubProcessors"},
+     {"xyz.openbmc_project.Inventory.Item.Chassis", "/redfish/v1/Chassis"},
+     {"xyz.openbmc_project.Inventory.Item.Tpm",
+      "/redfish/v1/Chassis/<str>/Assembly#/Assemblies"},
+     {"xyz.openbmc_project.Inventory.Item.Board.Motherboard",
+      "/redfish/v1/Chassis/<str>/Assembly#/Assemblies"}};
 
 using AssociationsValType =
     std::vector<std::tuple<std::string, std::string, std::string>>;
@@ -215,7 +221,29 @@ inline void getRedfishUriByDbusObjPath(
                 }
                 return;
             }
-
+        bool isChassisAssemblyUri = false;
+         std::string::size_type assemblyStartPos =
+             redfishUri.rfind("/Assembly#/Assemblies");
+         if (assemblyStartPos != std::string::npos)
+         {
+             // Redfish URI using path segment like DBus object path
+             // so using object_path type
+             if (sdbusplus::message::object_path(
+                     redfishUri.substr(0, assemblyStartPos))
+                     .parent_path()
+                     .filename() != "Chassis")
+             {
+                 // Currently, bmcweb supporting only chassis
+                 // assembly uri so return error if unsupported
+                 // assembly uri added in the redfishUriList.
+                 BMCWEB_LOG_ERROR(
+                     "Unsupported Assembly URI [{}] to fill in the OriginOfCondition. Please add support in the bmcweb",
+                     redfishUri);
+                 messages::internalError(asyncResp->res);
+                 return;
+             }
+             isChassisAssemblyUri = true;
+         }
             // Fill the all parents Redfish URI id.
             // For example, the processors id for the core.
             // "/redfish/v1/Systems/system/Processors/<str>/SubProcessors/core0"
@@ -253,9 +281,10 @@ inline void getRedfishUriByDbusObjPath(
          });
             crow::connections::systemBus->async_method_call(
                                [asyncResp, dbusObjPath, entryJsonIdx, redfishUri, uriIdPattern,
-              ancestorsIfaces](const boost::system::error_code& ec1,
-                               const dbus::utility::MapperGetSubTreeResponse&
-                                   ancestors) mutable {
+		                ancestorsIfaces, isChassisAssemblyUri](
+                 const boost::system::error_code& ec1,
+                 const dbus::utility::MapperGetSubTreeResponse&
+                     ancestors) mutable {
                    if (ec1)
                     {
                         BMCWEB_LOG_ERROR(
@@ -266,7 +295,12 @@ inline void getRedfishUriByDbusObjPath(
                         messages::internalError(asyncResp->res);
                         return;
                     }
-
+            // tuple: assembly parent service name, object path, and
+             // interface
+             std::tuple<std::string, sdbusplus::message::object_path,
+                        std::string>
+                 assemblyParent;
+ 
                      for (const auto& ancestorIface : ancestorsIfaces)
                     {
                                         bool foundAncestor = false;
@@ -274,21 +308,26 @@ inline void getRedfishUriByDbusObjPath(
                         {
                             for (const auto& service : obj.second)
                             {
-                                for (const auto& interface : service.second)
+				                        auto interfaceIter = std::ranges::find(
+                             service.second, ancestorIface.first);
+                         if (interfaceIter != service.second.end())
                                 {
-                                   if (interface == ancestorIface.first)
+				                                foundAncestor = true;
+                             redfishUri.replace(
+                                 ancestorIface.second, uriIdPattern.length(),
+                                 getIsolatedHwItemId(
+                                     sdbusplus::message::object_path(
+                                         obj.first)));
+
+                             if (isChassisAssemblyUri &&
+                                 ancestorIface.first ==
+                                     "xyz.openbmc_project.Inventory.Item.Chassis")
                                     {
-                                                                        foundAncestor = true;
-                                 redfishUri.replace(
-                                     ancestorIface.second, uriIdPattern.length(),
-                                     getIsolatedHwItemId(
-                                         sdbusplus::message::object_path(
-                                             obj.first)));
-                                        break;
+					                                    assemblyParent = std::make_tuple(
+                                     service.first,
+                                     sdbusplus::message::object_path(obj.first),
+                                     ancestorIface.first);
                                     }
-                                }
-                                if (foundAncestor)
-                                {
                                     break;
                                 }
                             }
@@ -314,11 +353,36 @@ inline void getRedfishUriByDbusObjPath(
                             .jsonValue["Members"][entryJsonIdx - 1]["Links"]
                                       ["OriginOfCondition"]["@odata.id"] =
                             redfishUri;
+
+			                   if (isChassisAssemblyUri)
+                 {
+                     auto uriPropPath = "/Members"_json_pointer;
+                     uriPropPath /= entryJsonIdx - 1;
+                     uriPropPath /= "Links/OriginOfCondition/@odata.id";
+
+                     assembly::fillWithAssemblyId(
+                         asyncResp, std::get<0>(assemblyParent),
+                         std::get<1>(assemblyParent),
+                         std::get<2>(assemblyParent), uriPropPath, dbusObjPath,
+                         redfishUri);
+                 }
                     }
                     else
                     {
                         asyncResp->res.jsonValue["Links"]["OriginOfCondition"]
                                                 ["@odata.id"] = redfishUri;
+			
+                 if (isChassisAssemblyUri)
+                 {
+                     auto uriPropPath =
+                         "/Links/OriginOfCondition/@odata.id"_json_pointer;
+ 
+                     assembly::fillWithAssemblyId(
+                         asyncResp, std::get<0>(assemblyParent),
+                         std::get<1>(assemblyParent),
+                         std::get<2>(assemblyParent), uriPropPath, dbusObjPath,
+                         redfishUri);
+                 }
                     }
                 },
                 "xyz.openbmc_project.ObjectMapper",
