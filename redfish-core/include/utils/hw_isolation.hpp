@@ -243,7 +243,7 @@ inline void deisolateResource(
 
             // De-isolate the given resource
             crow::connections::systemBus->async_method_call(
-                [asyncResp, resourceIsolatedHwEntry](
+                [asyncResp, resourceIsolatedHwEntry, resourceObjPath](
                     const boost::system::error_code& ec1,
                     const sdbusplus::message::message& msg) {
                     if (!ec1)
@@ -274,6 +274,13 @@ inline void deisolateResource(
                                        retChassisPowerStateOffRequiredError(asyncResp,
                                                       resourceObjPath);
                    }
+                               else if (
+                 std::string_view(
+                     "xyz.openbmc_project.Common.Error.InsufficientPermission") ==
+                 dbusError->name)
+             {
+                 messages::resourceCannotBeDeleted(asyncResp->res);
+             }
                     else
                     {
                         BMCWEB_LOG_ERROR(
