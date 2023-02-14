@@ -238,6 +238,8 @@ inline void deisolateResource(
  * @param[in] interfaces - The redfish resource dbus interfaces which will use
  *                         to get the given resource dbus objects from
  *                         the inventory.
+ * @param[in] parentSubtreePath - The resource parent subtree path to get
+ *                                the resource object path.
  *
  * @return The redfish response in given response buffer.
  *
@@ -253,7 +255,8 @@ inline void deisolateResource(
 inline void processHardwareIsolationReq(
     const std::shared_ptr<bmcweb::AsyncResp>& asyncResp,
     const std::string& resourceName, const std::string& resourceId,
-    bool enabled, const std::vector<std::string_view>& interfaces)
+    bool enabled, const std::vector<std::string_view>& interfaces,
+    const std::string& parentSubtreePath = "/xyz/openbmc_project/inventory")
 {
     std::vector<std::string_view> resourceIfaces(interfaces.begin(),
                                                  interfaces.end());
@@ -344,7 +347,7 @@ inline void processHardwareIsolationReq(
         "xyz.openbmc_project.ObjectMapper",
         "/xyz/openbmc_project/object_mapper",
         "xyz.openbmc_project.ObjectMapper", "GetSubTreePaths",
-        "/xyz/openbmc_project/inventory", 0, resourceIfaces);
+        parentSubtreePath, 0, resourceIfaces);
 }
 
 } // namespace hw_isolation_utils
