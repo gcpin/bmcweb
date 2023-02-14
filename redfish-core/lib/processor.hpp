@@ -1996,6 +1996,26 @@ inline void requestRoutesProcessor(App& app)
          patchCpuCoreMemberEnabled(asyncResp, coreId, *enabled);
      }
  }
+
+inline void requestRoutesSubProcessorsCore(App& app)
+ {
+     BMCWEB_ROUTE(
+         app, "/redfish/v1/Systems/system/Processors/<str>/SubProcessors/<str>")
+         .privileges(redfish::privileges::getProcessor)
+         .methods(boost::beast::http::verb::get)(
+             [](const crow::Request&,
+                const std::shared_ptr<bmcweb::AsyncResp>& asyncResp,
+                const std::string& processorId, const std::string& coreId) {
+         getSubProcessorData(asyncResp, processorId, coreId);
+     });
+
+     BMCWEB_ROUTE(
+         app, "/redfish/v1/Systems/system/Processors/<str>/SubProcessors/<str>")
+         .privileges(redfish::privileges::patchProcessor)
+         .methods(boost::beast::http::verb::patch)(patchCpuCoreMembers);
+ }
+
+
 inline void handleSubProcessorGet(
     App& app, const crow::Request& req,
     const std::shared_ptr<bmcweb::AsyncResp>& asyncResp,
