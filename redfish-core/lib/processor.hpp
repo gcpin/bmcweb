@@ -1180,6 +1180,11 @@ inline void getSubProcessorsCoreData(
                                          "/Name"_json_pointer);
             }
         }
+        if constexpr (BMCWEB_HW_ISOLATION)
+        {
+             // Check for the hardware status event
+             hw_isolation_utils::getHwIsolationStatus(asyncResp, corePath);
+        }
     }
 }
 
