@@ -5,6 +5,7 @@
 #include "dbus_utility.hpp"
 #include "error_messages.hpp"
 #include "logging.hpp"
+#include <error_messages.hpp>
 #include <utils/error_log_utils.hpp>
 #include <utils/time_utils.hpp>
 
@@ -190,10 +191,6 @@ inline void isolateResource(
  * @note - This function will try to identify the hardware isolated dbus entry
  *         from associations endpoints by using the given resource dbus object
  *         of "isolated_hw_entry".
- *       - This function will use the last endpoint from the list since the
- *         HardwareIsolation manager may be used the "Resolved" dbus entry
- *         property to indicate the deisolation instead of delete
- *         the entry object.
  */
 inline void deisolateResource(
     const std::shared_ptr<bmcweb::AsyncResp>& asyncResp,
@@ -202,86 +199,76 @@ inline void deisolateResource(
 {
     // Get the HardwareIsolation entry by using the given resource
     // associations endpoints
-    crow::connections::systemBus->async_method_call(
+    dbus::utility::getAssociationEndPoints(
+        resourceObjPath.str + "/isolated_hw_entry",
         [asyncResp, resourceObjPath, hwIsolationDbusName](
-            boost::system::error_code& ec,
-            const std::variant<std::vector<std::string>>& vEndpoints) {
-            if (ec)
+            const boost::system::error_code& ec,
+            const dbus::utility::MapperEndPoints& vEndpoints) {
+        if (ec)
+        {
+            BMCWEB_LOG_ERROR(
+                "DBus response error [{} : {}] when tried to get the hardware isolation entry for the given resource dbus object path: ",
+                ec.value(), ec.message(), resourceObjPath.str);
+            // The error code (53 == Invalid request descriptor) will be
+            // returned if dbus doesn't contains "isolated_hw_entry" for
+            // the given resource i.e it is not isolated to deisolate.
+            // This case might occur when resource are in the certain state
+            if (ec.value() == EBADR)
             {
-                BMCWEB_LOG_ERROR(
-                    "DBus response error [{} : {}] when tried to get the hardware isolation entry for the given resource dbus object path: {}",
-                    ec.value(), ec.message(), resourceObjPath.str);
+                messages::propertyValueConflict(asyncResp->res, "Enabled",
+                                                "Status.State");
+            }
+            else
+            {
+                messages::internalError(asyncResp->res);
+            }
+            return;
+        }
 
-             // The error code (53 == Invalid request descriptor) will be
-             // returned if dbus doesn't contains "isolated_hw_entry" for
-             // the given resource i.e it is not isolated to deisolate.
-             // This case might occur when resource are in the certain state
-             if (ec.value() == EBADR)
-             {
-                 messages::propertyValueConflict(asyncResp->res, "Enabled",
-                                                 "Status.State");
-             }
-             else
-             {
-                 messages::internalError(asyncResp->res);
-             }
+        std::string resourceIsolatedHwEntry;
+        resourceIsolatedHwEntry = vEndpoints.back();
+
+        // De-isolate the given resource
+        crow::connections::systemBus->async_method_call(
+            [asyncResp, resourceIsolatedHwEntry,
+             resourceObjPath](const boost::system::error_code& ec1,
+                              const sdbusplus::message::message& msg) {
+            if (!ec1)
+            {
+                messages::success(asyncResp->res);
                 return;
             }
 
-            std::string resourceIsolatedHwEntry;
-            const std::vector<std::string>* endpoints =
-                std::get_if<std::vector<std::string>>(&(vEndpoints));
-            if (endpoints == nullptr)
+            BMCWEB_LOG_ERROR(
+                "DBUS response error [{} : {}] when tried to isolate the given resource: {}",
+                ec1.value(), ec1.message(), resourceIsolatedHwEntry);
+
+            const sd_bus_error* dbusError = msg.get_error();
+
+            if (dbusError == nullptr)
             {
-                BMCWEB_LOG_ERROR(
-                    "Failed to get Associations endpoints for the given object path: {}",
-                    resourceObjPath.str);
                 messages::internalError(asyncResp->res);
                 return;
             }
-            resourceIsolatedHwEntry = endpoints->back();
 
-            // De-isolate the given resource
-            crow::connections::systemBus->async_method_call(
-                [asyncResp, resourceIsolatedHwEntry, resourceObjPath](
-                    const boost::system::error_code& ec1,
-                    const sdbusplus::message::message& msg) {
-                    if (!ec1)
-                    {
-                        messages::success(asyncResp->res);
-                        return;
-                    }
+            BMCWEB_LOG_ERROR("DBus ErrorName: {} ErrorMsg: {}", dbusError->name,
+                             dbusError->message);
 
-                    BMCWEB_LOG_ERROR(
-                        "DBUS response error [{} : {}] when tried to isolate the given resource: {}",
-                        ec1.value(), ec1.message(), resourceIsolatedHwEntry);
-
-                    const sd_bus_error* dbusError = msg.get_error();
-
-                    if (dbusError == nullptr)
-                    {
-                        messages::internalError(asyncResp->res);
-                        return;
-                    }
-
-                    BMCWEB_LOG_ERROR("DBus ErrorName: {} ErrorMsg: {}",
-                                     dbusError->name, dbusError->message);
-
-                    if (std::string_view(
-                            "xyz.openbmc_project.Common.Error.NotAllowed") ==
-                        dbusError->name)
-                    {
-                                       retChassisPowerStateOffRequiredError(asyncResp,
-                                                      resourceObjPath);
-                   }
-                               else if (
-                 std::string_view(
-                     "xyz.openbmc_project.Common.Error.InsufficientPermission") ==
-                 dbusError->name)
-             {
-                 messages::resourceCannotBeDeleted(asyncResp->res);
-             }
-                    else
+            if (std::string_view(
+                    "xyz.openbmc_project.Common.Error.NotAllowed") ==
+                dbusError->name)
+            {
+                retChassisPowerStateOffRequiredError(asyncResp,
+                                                     resourceObjPath);
+            }
+            else if (
+                std::string_view(
+                    "xyz.openbmc_project.Common.Error.InsufficientPermission") ==
+                dbusError->name)
+            {
+                messages::resourceCannotBeDeleted(asyncResp->res);
+            }
+                   else
                     {
                         BMCWEB_LOG_ERROR(
                             "DBus Error is unsupported so returning as Internal Error");
@@ -291,11 +278,7 @@ inline void deisolateResource(
                 },
                 hwIsolationDbusName, resourceIsolatedHwEntry,
                 "xyz.openbmc_project.Object.Delete", "Delete");
-        },
-        "xyz.openbmc_project.ObjectMapper",
-        resourceObjPath.str + "/isolated_hw_entry",
-        "org.freedesktop.DBus.Properties", "Get",
-        "xyz.openbmc_project.Association", "endpoints");
+    });
 }
 
 /**
@@ -469,6 +452,108 @@ inline bool
     return true;
 }
 
+static void
+    assembleEventProperties(const std::shared_ptr<bmcweb::AsyncResp>& asyncResp,
+                            const dbus::utility::DBusPropertiesMap& properties,
+                            nlohmann::json& condition, const std::string& path)
+{
+    using AssociationsValType =
+        std::vector<std::tuple<std::string, std::string, std::string>>;
+    const AssociationsValType* associations = nullptr;
+    const uint64_t* timestamp = nullptr;
+    const std::string* msgPropVal = nullptr;
+    const std::string* severity = nullptr;
+
+    const bool success = sdbusplus::unpackPropertiesNoThrow(
+        dbus_utils::UnpackErrorPrinter(), properties, "Associations",
+        associations, "Timestamp", timestamp, "Message", msgPropVal, "Severity",
+        severity);
+
+    if (!success)
+    {
+        messages::internalError(asyncResp->res);
+        BMCWEB_LOG_ERROR("Could not read one or more properties from {}", path);
+        return;
+    }
+
+    if (associations != nullptr)
+    {
+        for (const auto& assoc : *associations)
+        {
+            if (std::get<0>(assoc) == "error_log")
+            {
+                sdbusplus::message::object_path errPath = std::get<2>(assoc);
+                // we have only one condition
+                nlohmann::json_pointer<nlohmann::json> logEntryPropPath(
+                    "/Status/Conditions/0/LogEntry");
+                error_log_utils::setErrorLogUri(asyncResp, errPath,
+                                                logEntryPropPath, true);
+            }
+        }
+    }
+
+    if (timestamp != nullptr)
+    {
+        condition["Timestamp"] = redfish::time_utils::getDateTimeStdtime(
+            static_cast<std::time_t>(*timestamp));
+    }
+
+    if (msgPropVal != nullptr)
+    {
+        // Host recovered even if there is hardware
+        // isolation entry so change the state.
+        if (*msgPropVal == "Recovered")
+        {
+            asyncResp->res.jsonValue["Status"]["State"] = "Enabled";
+        }
+
+        const redfish::registries::Message* msgReg =
+            registries::getMessage("OpenBMC.0.2.HardwareIsolationReason");
+
+        if (msgReg == nullptr)
+        {
+            BMCWEB_LOG_ERROR(
+                "Failed to get the HardwareIsolationReason message registry to add in the condition");
+            messages::internalError(asyncResp->res);
+            return;
+        }
+
+        // Prepare MessageArgs as per defined in the
+        // MessageRegistries
+        std::vector<std::string> messageArgs{*msgPropVal};
+
+        // Fill the "msgPropVal" as reason
+        std::string message = msgReg->message;
+        int i = 0;
+        for (const std::string& messageArg : messageArgs)
+        {
+            std::string argIndex = "%" + std::to_string(++i);
+            size_t argPos = message.find(argIndex);
+            if (argPos != std::string::npos)
+            {
+                message.replace(argPos, argIndex.length(), messageArg);
+            }
+        }
+        // Severity will be added based on the event
+        // object property
+        condition["Message"] = message;
+        condition["MessageArgs"] = messageArgs;
+        condition["MessageId"] = "OpenBMC.0.2.HardwareIsolationReason";
+    }
+
+    if (severity != nullptr)
+    {
+        // we have only one condition
+        nlohmann::json_pointer<nlohmann::json> severityPropPath(
+            "/Status/Conditions/0/Severity");
+        if (!setSeverity(asyncResp, path, severityPropPath, *severity))
+        {
+            // Failed to set the severity
+            return;
+        }
+    }
+}
+
 /*
  * @brief The helper API to set the Redfish Status conditions based on
  *        the given resource event log association.
@@ -482,10 +567,11 @@ inline void
     getHwIsolationStatus(const std::shared_ptr<bmcweb::AsyncResp>& asyncResp,
                          const sdbusplus::message::object_path& resourceObjPath)
 {
-    crow::connections::systemBus->async_method_call(
-        [asyncResp, resourceObjPath](
-            boost::system::error_code& ec,
-            const std::variant<std::vector<std::string>>& vEndpoints) {
+    dbus::utility::getAssociationEndPoints(
+        resourceObjPath.str + "/event_log",
+        [asyncResp,
+         resourceObjPath](const boost::system::error_code& ec,
+                          const dbus::utility::MapperEndPoints& vEndpoints) {
         if (ec)
         {
             if (ec.value() == EBADR)
@@ -501,20 +587,9 @@ inline void
             return;
         }
 
-        const std::vector<std::string>* endpoints =
-            std::get_if<std::vector<std::string>>(&(vEndpoints));
-        if (endpoints == nullptr)
-        {
-            BMCWEB_LOG_ERROR(
-                "Failed to get Associations endpoints for the given object path: {}",
-                resourceObjPath.str);
-            messages::internalError(asyncResp->res);
-            return;
-        }
-
         bool found = false;
         std::string hwStatusEventObj;
-        for (const auto& endpoint : *endpoints)
+        for (const auto& endpoint : vEndpoints)
         {
             if (sdbusplus::message::object_path(endpoint)
                     .parent_path()
@@ -564,17 +639,13 @@ inline void
                 return;
             }
 
-            using AssociationsValType =
-                std::vector<std::tuple<std::string, std::string, std::string>>;
-            using HwStausEventPropertiesType = boost::container::flat_map<
-                std::string,
-                std::variant<std::string, uint64_t, AssociationsValType>>;
-
             // Get event properties and fill into status conditions
-            crow::connections::systemBus->async_method_call(
+            sdbusplus::asio::getAllProperties(
+                *crow::connections::systemBus, objType[0].first,
+                hwStatusEventObj, "",
                 [asyncResp, hwStatusEventObj](
                     const boost::system::error_code& ec2,
-                    const HwStausEventPropertiesType& properties) {
+                    const dbus::utility::DBusPropertiesMap& properties) {
                 if (ec2)
                 {
                     BMCWEB_LOG_ERROR(
@@ -595,145 +666,15 @@ inline void
                 conditions.push_back(nlohmann::json::object());
                 nlohmann::json& condition = conditions.back();
 
-                for (const auto& property : properties)
-                {
-                    if (property.first == "Associations")
-                    {
-                        const AssociationsValType* associations =
-                            std::get_if<AssociationsValType>(&property.second);
-                        if (associations == nullptr)
-                        {
-                            BMCWEB_LOG_ERROR(
-                                "Failed to get the Associations from object: {}",
-                                hwStatusEventObj);
-                            messages::internalError(asyncResp->res);
-                            return;
-                        }
-
-                        for (const auto& assoc : *associations)
-                        {
-                            if (std::get<0>(assoc) == "error_log")
-                            {
-                                sdbusplus::message::object_path errPath =
-                                    std::get<2>(assoc);
-                                // we have only one condition
-                                nlohmann::json_pointer<nlohmann::json>
-                                    logEntryPropPath(
-                                        "/Status/Conditions/0/LogEntry");
-                                error_log_utils::setErrorLogUri(
-                                    asyncResp, errPath, logEntryPropPath, true);
-                            }
-                        }
-                    }
-                    else if (property.first == "Timestamp")
-                    {
-                        const uint64_t* timestamp =
-                            std::get_if<uint64_t>(&property.second);
-                        if (timestamp == nullptr)
-                        {
-                            BMCWEB_LOG_ERROR(
-                                "Failed to get the Timestamp from object: {}",
-                                hwStatusEventObj);
-                            messages::internalError(asyncResp->res);
-                            return;
-                        }
-                        condition["Timestamp"] =
-                            redfish::time_utils::getDateTimeStdtime(
-                                static_cast<std::time_t>(*timestamp));
-                    }
-                    else if (property.first == "Message")
-                    {
-                        const std::string* msgPropVal =
-                            std::get_if<std::string>(&property.second);
-                        if (msgPropVal == nullptr)
-                        {
-                            BMCWEB_LOG_ERROR(
-                                "Failed to get the Message from object: {}",
-                                hwStatusEventObj);
-                            messages::internalError(asyncResp->res);
-                            return;
-                        }
-
-                        // Host recovered even if there is hardware
-                        // isolation entry so change the state.
-                        if (*msgPropVal == "Recovered")
-                        {
-                            asyncResp->res.jsonValue["Status"]["State"] =
-                                "Enabled";
-                        }
-
-                        const redfish::registries::Message* msgReg =
-                            registries::getMessage(
-                                "OpenBMC.0.2.HardwareIsolationReason");
-
-                        if (msgReg == nullptr)
-                        {
-                            BMCWEB_LOG_ERROR(
-                                "Failed to get the HardwareIsolationReason message registry to add in the condition");
-                            messages::internalError(asyncResp->res);
-                            return;
-                        }
-
-                        // Prepare MessageArgs as per defined in the
-                        // MessageRegistries
-                        std::vector<std::string> messageArgs{*msgPropVal};
-
-                        // Fill the "msgPropVal" as reason
-                        std::string message = msgReg->message;
-                        int i = 0;
-                        for (const std::string& messageArg : messageArgs)
-                        {
-                            std::string argIndex = "%" + std::to_string(++i);
-                            size_t argPos = message.find(argIndex);
-                            if (argPos != std::string::npos)
-                            {
-                                message.replace(argPos, argIndex.length(),
-                                                messageArg);
-                            }
-                        }
-                        // Severity will be added based on the event
-                        // object property
-                        condition["Message"] = message;
-                        condition["MessageArgs"] = messageArgs;
-                        condition["MessageId"] =
-                            "OpenBMC.0.2.HardwareIsolationReason";
-                    }
-                    else if (property.first == "Severity")
-                    {
-                        const std::string* severity =
-                            std::get_if<std::string>(&property.second);
-                        if (severity == nullptr)
-                        {
-                            BMCWEB_LOG_ERROR(
-                                "Failed to get the Severity from object: {}",
-                                hwStatusEventObj);
-                            messages::internalError(asyncResp->res);
-                            return;
-                        }
-
-                        // we have only one condition
-                        nlohmann::json_pointer<nlohmann::json> severityPropPath(
-                            "/Status/Conditions/0/Severity");
-                        if (!setSeverity(asyncResp, hwStatusEventObj,
-                                         severityPropPath, *severity))
-                        {
-                            // Failed to set the severity
-                            return;
-                        }
-                    }
-                }
-            },
-                objType[0].first, hwStatusEventObj,
-                "org.freedesktop.DBus.Properties", "GetAll", "");
+                assembleEventProperties(asyncResp, properties, condition,
+                                        hwStatusEventObj);
+            });
         },
             "xyz.openbmc_project.ObjectMapper",
             "/xyz/openbmc_project/object_mapper",
             "xyz.openbmc_project.ObjectMapper", "GetObject", hwStatusEventObj,
             std::array<const char*, 1>{"xyz.openbmc_project.Logging.Event"});
-    },
-        "xyz.openbmc_project.ObjectMapper", resourceObjPath.str + "/event_log",
-        "org.freedesktop.DBus.Properties", "Get",
-        "xyz.openbmc_project.Association", "endpoints");
+    });
 }
 
 } // namespace hw_isolation_utils

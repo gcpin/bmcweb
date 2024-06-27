@@ -559,13 +559,18 @@ inline void fillSystemHardwareIsolationLogEntry(
                         entryJson["Severity"] = "Critical";
                     }
                     else if (
-                        (*severity ==
-                         "xyz.openbmc_project.HardwareIsolation.Entry.Type.Warning") ||
-                        (*severity ==
-                         "xyz.openbmc_project.HardwareIsolation.Entry.Type.Manual"))
+	                                    *severity ==
+                         "xyz.openbmc_project.HardwareIsolation.Entry.Type.Warning")
                     {
                         entryJson["Severity"] = "Warning";
                     }
+
+                     else if (
+                         *severity ==
+                         "xyz.openbmc_project.HardwareIsolation.Entry.Type.Manual")
+                     {
+                         entryJson["Severity"] = "OK";
+                     }
                     else
                     {
                         BMCWEB_LOG_ERROR(
@@ -574,19 +579,6 @@ inline void fillSystemHardwareIsolationLogEntry(
                         messages::internalError(asyncResp->res);
                         break;
                     }
-                }
-                else if (property.first == "Resolved")
-                {
-                    const bool* resolved = std::get_if<bool>(&property.second);
-                    if (resolved == nullptr)
-                    {
-                        BMCWEB_LOG_ERROR(
-                            "Failed to get the Resolved from object: {}",
-                            dbusObjIt->first.str);
-                        messages::internalError(asyncResp->res);
-                        break;
-                    }
-                    entryJson["Resolved"] = *resolved;
                 }
             }
         }
