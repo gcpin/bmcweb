@@ -1045,6 +1045,7 @@ inline void
                                  return;
                              }
                              functional = *value;
+                             break;
                          }
                      }
                  }
@@ -1075,6 +1076,24 @@ inline void
                          }
                      }
                  }
+                             else if (interface == "xyz.openbmc_project.Object.Enable")
+             {
+                 for (const auto& [propName, propValue] : properties)
+                 {
+                     if (propName == "Enabled")
+                     {
+                         const bool* enabled = std::get_if<bool>(&propValue);
+                         if (enabled == nullptr)
+                         {
+                             messages::internalError(asyncResp->res);
+                             return;
+                         }
+                         asyncResp->res.jsonValue["Enabled"] = *enabled;
+                         break;
+                     }
+                 }
+             }
+
              }
 
              if (!present)
