@@ -631,6 +631,7 @@ inline void fillSystemHardwareIsolationLogEntry(
              : asyncResp->res.jsonValue);
 
 	    std::string guardType;
+	        bool hiddenPEL = false;
      // We need the severity details before getting the associations
      // to fill the message details.
 
@@ -664,6 +665,7 @@ inline void fillSystemHardwareIsolationLogEntry(
                              "xyz.openbmc_project.HardwareIsolation.Entry.Type.Spare")
                     {
                          entryJson["Severity"] = "OK";
+			 hiddenPEL = true;
                      }
                 }
             }
@@ -726,9 +728,15 @@ inline void fillSystemHardwareIsolationLogEntry(
                         {
                             sdbusplus::message::object_path errPath =
                                 std::get<2>(assoc);
+
+                             std::string logPath = "EventLog";
+                             if (hiddenPEL)
+                             {
+                                 logPath = "CELog";
+                             }
                             entryJson["AdditionalDataURI"] = boost::urls::format(
-                                "/redfish/v1/Systems/system/LogServices/EventLog/Entries/{}/attachment",
-                                errPath.filename());
+				                                "/redfish/v1/Systems/system/LogServices/{}/Entries/{}/attachment",
+                                 logPath, errPath.filename());
                         }
                     }
                 }
