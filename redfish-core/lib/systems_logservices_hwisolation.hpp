@@ -750,7 +750,7 @@ inline void fillSystemHardwareIsolationLogEntry(
                                          "/redfish/v1/Systems/system/LogServices/{}/Entries/{}/attachment",
                                          logPath, entryID);
                              };
-                             getHiddenPropertyValue(asyncResp, entryID,
+                             error_log_utils::getHiddenPropertyValue(asyncResp, entryID,
                                                     updateAdditionalDataURI);
                         }
                     }
